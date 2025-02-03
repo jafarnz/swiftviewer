@@ -4,26 +4,34 @@ const RAPIDAPI_KEY = process.env.NEXT_PUBLIC_RAPIDAPI_KEY
 const RAPIDAPI_HOST = process.env.NEXT_PUBLIC_RAPIDAPI_HOST
 const POLYGON_API_KEY = process.env.NEXT_PUBLIC_POLYGON_API_KEY
 
-export type StockQuote = {
-  symbol: string
-  price: number
-  change: number
-  changePercent: number
-  volume: number
-  marketCap?: number
-  companyName?: string
+export interface MarketStats {
+  totalMarketCap: number
+  total24hVolume: number
+  btcDominance: number
+  activeCryptocurrencies: number
+  marketCapChange24h: number
+  volumeChange24h: number
+  btcDominanceChange24h: number
+  activeMarketsChange24h: number
 }
 
-export type CryptoQuote = {
-  id: string
+export interface CryptoQuote {
   symbol: string
   name: string
-  current_price: number
-  price_change_percentage_24h: number
-  market_cap: number
-  total_volume: number
-  image: string
-  sparkline_in_7d?: { price: number[] }
+  price: number
+  volume24h: number
+  priceChange24h: number
+  type: 'crypto'
+}
+
+export interface StockQuote {
+  symbol: string
+  name: string
+  price: number
+  volume: number
+  change: number
+  changePercent: number
+  type: 'stock'
 }
 
 // Rate limit helper for Polygon API (5 calls per minute)
@@ -44,10 +52,12 @@ export async function getStockQuote(symbol: string): Promise<StockQuote> {
 
     return {
       symbol: symbol,
+      name: quote.T,
       price: quote.c,
+      volume: quote.v,
       change: change,
       changePercent: changePercent,
-      volume: quote.v
+      type: 'stock'
     }
   }
   throw new Error('Failed to fetch stock quote')
@@ -88,37 +98,52 @@ export async function searchStocks(query: string) {
 
 // Fetch top 50 cryptocurrencies with 7-day sparkline data
 export async function getTopCryptos(): Promise<CryptoQuote[]> {
-  const response = await fetch(
-    'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=true'
-  )
-  return await response.json()
+  const response = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&sparkline=false')
+  const data = await response.json()
+  
+  return data.map((coin: any) => ({
+    symbol: coin.symbol.toUpperCase(),
+    name: coin.name,
+    price: coin.current_price,
+    volume24h: coin.total_volume,
+    priceChange24h: coin.price_change_percentage_24h,
+    type: 'crypto' as const
+  }))
 }
 
 // Fetch crypto historical data with more options
-export async function getCryptoHistory(id: string, days: number = 1) {
-  const response = await fetch(
-    `https://api.coingecko.com/api/v3/coins/${id}/market_chart?vs_currency=usd&days=${days}&interval=${days <= 1 ? 'minute' : 'hourly'}`
-  )
+export async function getCryptoHistory(symbol: string, days: number): Promise<any[]> {
+  const response = await fetch(`https://api.coingecko.com/api/v3/coins/${symbol.toLowerCase()}/market_chart?vs_currency=usd&days=${days}`)
   const data = await response.json()
+  
   return data.prices.map(([timestamp, price]: [number, number]) => ({
-    timestamp: new Date(timestamp).toISOString(),
+    timestamp,
     price
   }))
 }
 
 // Search cryptocurrencies
-export async function searchCryptos(query: string) {
-  const response = await fetch(
-    `https://api.coingecko.com/api/v3/search?query=${query}`
-  )
+export async function searchCryptos(query: string): Promise<CryptoQuote[]> {
+  const response = await fetch(`https://api.coingecko.com/api/v3/search?query=${query}`)
   const data = await response.json()
-  return data.coins.map((coin: any) => ({
-    id: coin.id,
-    symbol: coin.symbol.toUpperCase(),
-    name: coin.name,
-    image: coin.large,
-    market_cap_rank: coin.market_cap_rank
-  }))
+  
+  const coins = await Promise.all(
+    data.coins.slice(0, 10).map(async (coin: any) => {
+      const details = await fetch(`https://api.coingecko.com/api/v3/coins/${coin.id}?localization=false&tickers=false&community_data=false&developer_data=false`)
+      const coinData = await details.json()
+      
+      return {
+        symbol: coinData.symbol.toUpperCase(),
+        name: coinData.name,
+        price: coinData.market_data.current_price.usd,
+        volume24h: coinData.market_data.total_volume.usd,
+        priceChange24h: coinData.market_data.price_change_percentage_24h,
+        type: 'crypto' as const
+      }
+    })
+  )
+  
+  return coins
 }
 
 // Get detailed crypto info
@@ -127,4 +152,26 @@ export async function getCryptoDetails(id: string) {
     `https://api.coingecko.com/api/v3/coins/${id}?localization=false&tickers=false&community_data=false&developer_data=false`
   )
   return await response.json()
+}
+
+export async function getMarketStats(): Promise<MarketStats> {
+  try {
+    const response = await fetch('https://api.coingecko.com/api/v3/global')
+    const data = await response.json()
+    const market = data.data.total_market_cap
+    
+    return {
+      totalMarketCap: market.usd,
+      total24hVolume: data.data.total_volume.usd,
+      btcDominance: data.data.market_cap_percentage.btc,
+      activeCryptocurrencies: data.data.active_cryptocurrencies,
+      marketCapChange24h: data.data.market_cap_change_percentage_24h_usd,
+      volumeChange24h: ((data.data.total_volume.usd / market.usd) - 1) * 100,
+      btcDominanceChange24h: data.data.market_cap_percentage.btc_dominance_24h || 0,
+      activeMarketsChange24h: data.data.markets_change_24h || 0
+    }
+  } catch (error) {
+    console.error('Error fetching market stats:', error)
+    throw error
+  }
 } 
